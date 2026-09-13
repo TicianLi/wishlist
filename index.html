@@ -422,7 +422,7 @@ button,.btn,.td-low,.td-count,.td-target,.gname{touch-action:manipulation;-webki
           <button type="button" class="input-act danger-act" data-act="clear-input" data-target="setItadKey" title="一键清空" aria-label="清空">✕</button>
         </span>
       </div>
-      <div class="hint" data-page-node-id="0zo7ecZciR29XxIXjAdfB5">获取地址：https://isthereanydeal.com/settings/api/ · Key 仅保存在本机</div>
+      <div class="hint" data-page-node-id="0zo7ecZciR29XxIXjAdfB5">获取地址：https://isthereanydeal.com/settings/api/ · Key 保存在本机，默认不经公共代理发送</div>
     </div>
     <div class="form-row" data-page-node-id="wWievFhWvV5jaH8CjA9baq">
       <label data-page-node-id="ik0mxX8qJZKwVLUQ37HJ8G">自定义代理地址（前缀格式，如 https://your-proxy.example.com/?url= ）</label>
@@ -435,6 +435,7 @@ button,.btn,.td-low,.td-count,.td-target,.gname{touch-action:manipulation;-webki
     </div>
     <div class="check-row" data-page-node-id="SCU9Zaov9xRuJRkBdTLDZU"><input type="checkbox" id="setAutoTranslate" data-page-node-id="iDsGWL6s4SbZlGIRNrfkBv"><label for="setAutoTranslate" style="margin:0;" data-page-node-id="bOaqcFIqgYBLwyqpwmZ0Bn">启用自动翻译（无官方中文名时）</label></div>
     <div class="check-row" data-page-node-id="kV9m22NUxkQZNzH1VBDZdC"><input type="checkbox" id="setPublicProxy" data-page-node-id="uUNlclYG8di1QHguDk1dbi"><label for="setPublicProxy" style="margin:0;" data-page-node-id="Mnoz1tZsVWRTw831qDhq8F">启用公共代理（allorigins / corsproxy / thingproxy）</label></div>
+    <div class="check-row"><input type="checkbox" id="setItadPublicProxy"><label for="setItadPublicProxy" style="margin:0;">允许 ITAD API Key 经公共代理发送（可能泄露 Key，不推荐）</label></div>
     <div class="form-row" data-page-node-id="Hg21QBrVmG7MwOGAD8BvTA">
       <label data-page-node-id="GXtRagemp1Uq4ZasXNUBlG">请求超时时间（毫秒）</label>
       <input type="number" id="setTimeout" min="3000" max="60000" step="1000" data-page-node-id="tJFh4UzqE9EErJ1vMvOeAK">
@@ -543,6 +544,7 @@ const CONFIG = {
  * ============================================================ */
 const DEFAULT_SETTINGS = {
   itadKey: '',
+  itadAllowPublicProxy: false,
   customProxy: '',
   autoTranslate: true,
   usePublicProxies: true,
@@ -576,6 +578,7 @@ const $  = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const nowMs = () => Date.now();
+function toTimestampMs(v) { const n = Number(v); if (!isFinite(n) || n <= 0) return null; return n < 1e12 ? n * 1000 : n; }
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -593,7 +596,7 @@ function fmtTime(ts) { return ts ? new Date(ts).toLocaleString('zh-CN', { hour12
 function fmtCount(n) {
   n = Number(n);
   if (!isFinite(n)) return '—';
-  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + ' 万+';
+  if (n >= 100000000) return (n / 100000000).toFixed(1).replace(/\.0$/, '') + ' 亿';
   if (n >= 10000) return (n / 10000).toFixed(1).replace(/\.0$/, '') + ' 万';
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return String(n);
@@ -694,8 +697,10 @@ function loadData() {
   const oldVer = data.version || 0;
   let hasOldDlcKind = false;
   STATE.games = data.games.map(g => {
-    const base = newGame(g.appid, g.name, g.originalName);
-    if (!g.appid) return null;
+    if (!g || typeof g !== 'object') return null;
+    const appid = Number(g.appid);
+    if (!isFinite(appid) || appid <= 0) return null;
+    const base = newGame(appid, g.name, g.originalName);
     const merged = Object.assign(base, g, {
       price: Object.assign(defaultPrice(), g.price || {}),
       rating: Object.assign(defaultRating(), g.rating || {}),
@@ -778,14 +783,16 @@ const steamLimiter = new RateLimiter(CONFIG.STEAM_INTERVAL);
 
 /* ============================================================
  * API 统一请求层
- *  proxyFetch：用户自定义代理 → 直连 → allorigins → corsproxy → thingproxy
+ *  proxyFetch：用户自定义代理 → 直连；非敏感请求再走公共代理
  *  任何一级失败自动尝试下一级；全程记录调试日志；绝不抛出未处理异常。
  * ============================================================ */
 function dbgPush(entry) {
   STATE.debugLog.unshift(Object.assign({ time: nowMs() }, entry));
   if (STATE.debugLog.length > 80) STATE.debugLog.length = 80;
 }
-function shortUrl(u) { return String(u).slice(0, 90); }
+function shortUrl(u) {
+  return String(u).replace(/([?&](?:key|api[_-]?key|token|access_token|password|secret)=)[^&#]*/gi, '$1[REDACTED]').slice(0, 90);
+}
 
 /* ------------------------------------------------------------
  * 超时 / 取消 的区分（修复 #5 的核心）
@@ -863,7 +870,9 @@ async function proxyFetch(url, options) {
     chain.push({ name: '自定义代理', build: u => STATE.settings.customProxy + encodeURIComponent(u) });
   }
   chain.push({ name: '直连', build: u => u });
-  if (STATE.settings.usePublicProxies) {
+  // 带密钥的请求只走直连/用户自定义代理，避免 API Key 泄露给公共代理。
+  const usePublicProxies = STATE.settings.usePublicProxies && !(options && options.private);
+  if (usePublicProxies) {
     const names = Object.keys(CONFIG.PROXY_BUILDERS);
     if (lastGoodProxy && names.indexOf(lastGoodProxy) !== -1) {
       names.splice(names.indexOf(lastGoodProxy), 1);
@@ -1093,7 +1102,7 @@ async function translateText(text, opts) {
   text = String(text || '').trim();
   if (!text) return null;
   if (isMostlyChinese(text)) return null;          // 真的已是中文，无需翻译
-  const key = text.slice(0, 160);
+  const key = text;
   if (STATE.transCache[key]) return STATE.transCache[key];
   if (opts && opts.signal && opts.signal.aborted) return null;
 
@@ -1123,68 +1132,94 @@ async function translateText(text, opts) {
  *  若官方接口结构变化，只需修改本层。
  *  无 Key 时返回 { skipped:true }（调用方显示"待核"）。
  * ============================================================ */
+function itadPriceInfo(value) {
+  if (value == null) return null;
+  if (typeof value === 'number') return isFinite(value) ? { price: value, currency: null } : null;
+  if (typeof value !== 'object') return null;
+  if (typeof value.amount === 'number') return { price: value.amount, currency: value.currency || null };
+  if (typeof value.amountInt === 'number') return { price: value.amountInt / 100, currency: value.currency || null };
+  if (typeof value.price === 'number') return { price: value.price, currency: value.currency || null };
+  if (value.price && typeof value.price === 'object') return itadPriceInfo(value.price);
+  return null;
+}
+function itadEntryPrice(it) {
+  if (!it) return null;
+  return itadPriceInfo(it.deal && it.deal.price) ||
+    itadPriceInfo(it.low && it.low.price) ||
+    itadPriceInfo(it.lowest && it.lowest.price) ||
+    itadPriceInfo(it.price) ||
+    itadPriceInfo(typeof it.amount === 'number' ? it : null);
+}
 function parseItadLow(d) {
-  // 兼容 history v2（数组 / {data:[]}）与 overview（{lowest:{...}}）两种结构
-  let list = null;
-  if (Array.isArray(d)) list = d;
-  else if (d && Array.isArray(d.data)) list = d.data;
-  if (list && list.length) {
-    let low = Infinity, currency = 'CNY';
-    const priceOf = it => {
-      if (!it) return null;
-      if (it.price && typeof it.price === 'object') {
-        if (typeof it.price.amount === 'number') return it.price.amount / 100; // amount 为分
-        if (typeof it.price.price === 'number') return it.price.price;
-      }
-      if (typeof it.price_new === 'number') return it.price_new;
-      if (typeof it.price_old === 'number') return it.price_old;
-      return null;
+  let entries = [];
+  if (Array.isArray(d)) entries = d;
+  else if (d && Array.isArray(d.prices)) entries = d.prices;
+  else if (d && Array.isArray(d.data)) entries = d.data;
+
+  const rows = [];
+  entries.forEach(it => {
+    if (it && Array.isArray(it.lows)) it.lows.forEach(low => rows.push(low));
+    else rows.push(it);
+  });
+
+  const prices = [];
+  let low = Infinity, currency = null;
+  rows.forEach(it => {
+    const info = itadEntryPrice(it);
+    if (!info || !isFinite(info.price) || info.price < 0) return;
+    prices.push(info.price);
+    if (info.price < low) { low = info.price; currency = info.currency || currency; }
+  });
+  if (isFinite(low)) {
+    return {
+      price: low,
+      count: prices.filter(p => p <= low * 1.02).length,
+      currency: currency || 'CNY'
     };
-    for (const it of list) {
-      const p = priceOf(it);
-      if (p != null && p < low) { low = p; if (it.price && it.price.currency) currency = it.price.currency; }
-    }
-    if (isFinite(low)) {
-      let count = 0;
-      for (const it of list) { const p = priceOf(it); if (p != null && p <= low * 1.02) count++; }
-      return { price: low, count: count, currency: currency };
-    }
   }
+
   if (d && d.lowest) {
-    const L = d.lowest;
-    const p = (typeof L.price === 'number') ? L.price : (L.price && typeof L.price.amount === 'number' ? L.price.amount / 100 : null);
-    if (p != null) return { price: p, count: L.times || null, currency: (L.price && L.price.currency) || 'CNY' };
+    const info = itadPriceInfo(d.lowest.price) || itadPriceInfo(d.lowest);
+    if (info && isFinite(info.price)) {
+      return {
+        price: info.price,
+        count: d.lowest.times != null ? d.lowest.times : null,
+        currency: info.currency || 'CNY'
+      };
+    }
   }
   return null;
+}
+
+async function itadLookupGameId(appid, opts) {
+  const key = STATE.settings.itadKey;
+  const url = 'https://api.isthereanydeal.com/games/lookup/v1?key=' + encodeURIComponent(key) +
+    '&appid=' + encodeURIComponent(appid);
+  const d = await getJSON(url, opts || {});
+  if (!d || !d.found || !d.game || !d.game.id) throw new Error('ITAD 未找到 AppID ' + appid + ' 对应的游戏');
+  return d.game.id;
 }
 
 async function itadGetHistoryLow(appid, opts) {
   const key = STATE.settings.itadKey;
   if (!key) return { skipped: true };
   if (opts && opts.signal && opts.signal.aborted) throw Object.assign(new Error('请求已取消'), { name: 'AbortError' });
-  const urls = [
-    'https://api.isthereanydeal.com/games/history/v2?key=' + encodeURIComponent(key) + '&country=CN&shops=61&apps=' + appid,
-    'https://api.isthereanydeal.com/game/overview/v2?appid=' + appid + '&key=' + encodeURIComponent(key) + '&country=CN'
-  ];
-  let lastErr = null;
-  for (const u of urls) {
-    try {
-      const d = await getJSON(u, opts || {});
-      const low = parseItadLow(d);
-      if (low) return {
-        price: low.price, count: low.count, currency: low.currency,
-        confidence: 'A', source: 'ITAD(国区)', updatedAt: nowMs()
-      };
-      lastErr = new Error('ITAD 未返回该游戏的历史数据');
-    } catch (e) {
-      // 中断错误立刻向上抛
-      if (isAbortErr(e)) throw e;
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error('ITAD 请求失败');
-}
 
+  // ITAD v2 的 history 接口需要 UUID（不是 Steam AppID），先 lookup 再查历史。
+  // private 会根据用户设置阻止请求经过公共 CORS 代理，默认避免把 API Key 发给第三方。
+  const requestOpts = Object.assign({}, opts || {}, { private: !STATE.settings.itadAllowPublicProxy });
+  const gameId = await itadLookupGameId(appid, requestOpts);
+  const url = 'https://api.isthereanydeal.com/games/history/v2?key=' + encodeURIComponent(key) +
+    '&id=' + encodeURIComponent(gameId) +
+    '&country=CN&shops=61&since=' + encodeURIComponent('2000-01-01T00:00:00Z');
+  const d = await getJSON(url, requestOpts);
+  const low = parseItadLow(d);
+  if (!low) throw new Error('ITAD 未返回该游戏的历史数据');
+  return {
+    price: low.price, count: low.count, currency: low.currency,
+    confidence: 'A', source: 'ITAD(国区)', updatedAt: nowMs()
+  };
+}
 /* ============================================================
  * DATA NORMALIZER
  * ============================================================ */
@@ -1231,15 +1266,12 @@ function extractPrice(data, priceObj) {
  *   字段缺失时返回 null，调用方显示"—"，绝不编造。
  * ------------------------------------------------------------ */
 function saleRemainMs(g) {
-  const exp = g && g.price && g.price.discountExpiration;
-  if (!exp) return null;
-  // 防御：历史数据/外部导入可能存的是 Unix 秒（1e12 以下视为秒）
-  const expMs = exp < 1e12 ? exp * 1000 : exp;
-  return expMs - nowMs();
+  const expMs = toTimestampMs(g && g.price && g.price.discountExpiration);
+  return expMs == null ? null : expMs - nowMs();
 }
 function fmtDeadline(exp) {
-  if (!exp) return null;
-  const expMs = exp < 1e12 ? exp * 1000 : exp;   // 同上，秒/毫秒自适应
+  const expMs = toTimestampMs(exp);
+  if (expMs == null) return null;
   const d = new Date(expMs);
   const p = n => String(n).padStart(2, '0');
   return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + p(d.getHours()) + ':' + p(d.getMinutes());
@@ -1259,13 +1291,14 @@ function fmtRemain(ms) {
 function deadlineCellHtml(g) {
   if (!(g.price && g.price.isOnSale)) return '<span style="color:var(--muted)">—</span>';
   const exp = g.price.discountExpiration;
-  if (!exp) return '<span style="color:var(--muted)" title="Steam 未返回该游戏的折扣截止时间">未知</span>';
-  const ms = exp - nowMs();
+  const expMs = toTimestampMs(exp);
+  if (expMs == null) return '<span style="color:var(--muted)" title="Steam 未返回该游戏的折扣截止时间">未知</span>';
+  const ms = expMs - nowMs();
   const end = ms <= 0;
   const soon = !end && ms <= 24 * 3600 * 1000;
   const cls = end ? 'low-pending' : (soon ? 'sale-soon' : 'sale-ok');
   const label = end ? '已结束' : fmtRemain(ms);
-  return '<span class="' + cls + '" title="截止：' + esc(fmtDeadline(exp)) + '（' + esc(fmtTime(exp)) + '）">' +
+  return '<span class="' + cls + '" title="截止：' + esc(fmtDeadline(expMs)) + '（' + esc(fmtTime(expMs)) + '）">' +
     esc(label) + (soon ? ' ⚠️' : '') + '</span>' +
     '<br><small style="color:var(--muted)">' + esc(fmtDeadline(exp)) + '</small>';
 }
@@ -1987,17 +2020,18 @@ async function pumpQueue() {
   queueRunning = true;
   try {
     while (true) {
+      // 候选弹窗必须逐个处理；处理完当前选择后再继续下一条任务。
+      const waiting = STATE.taskQueue.find(x => x.status === 'needpick' && !x.pickOpened);
+      if (waiting) { openTaskPick(waiting); break; }
       const t = STATE.taskQueue.find(x => x.status === 'pending');
       if (!t) break;
       await runTask(t);
+      if (t.status === 'needpick') { openTaskPick(t); break; }
       await sleep(600);   // 任务间限速
     }
   } finally {
     queueRunning = false;
   }
-  // 队列空闲时，若有等待选候选的任务还没弹出过，自动弹出
-  const wait = STATE.taskQueue.find(x => x.status === 'needpick' && !x.pickOpened);
-  if (wait) openTaskPick(wait);
   renderQueue();
 }
 
@@ -2023,7 +2057,6 @@ async function runTask(t) {
         t.candidates = items;
         t.status = 'needpick'; t.msg = '等待选择候选游戏';
         t.pickOpened = false;
-        openTaskPick(t);
       }
     }
   } catch (e) {
@@ -2045,6 +2078,7 @@ async function finishPick(t, picked) {
   if (!picked) {
     t.status = 'failed'; t.msg = '未选择候选（可点重试）';
     renderQueue();
+    pumpQueue();
     return;
   }
   t.status = 'running'; t.msg = '正在获取 ' + picked.name + ' …'; renderQueue();
@@ -2066,6 +2100,7 @@ async function finishPick(t, picked) {
     if (STATE.currentTaskAbort === ctrl) STATE.currentTaskAbort = null;
     releaseProgress();
     renderQueue(); renderAll();
+    pumpQueue();
   }
 }
 
@@ -2077,7 +2112,7 @@ function openTaskPick(t) {
   t.pickOpened = true;
   showCandidates(t.candidates, '任务「' + t.term + '」请选择正确的游戏：').then(picked => {
     delete pendingPicks[t.id];
-    if (t.resolvePick) { const r = t.resolvePick; t.resolvePick = null; r(picked); }
+    return finishPick(t, picked);
   }).catch(e => {
     delete pendingPicks[t.id];
     t.status = 'failed'; t.msg = '候选选择失败：' + (e && e.message); renderQueue();
@@ -2563,10 +2598,9 @@ $('#detailBody').addEventListener('click', e => {
 });
 
 let confirmCallback = null;
-function showConfirm(msgHtml, onOk, opts) {
+function showConfirm(msg, onOk, opts) {
   opts = opts || {};
-  $('#confirmText').textContent = '';
-  $('#confirmText').innerHTML = msgHtml;
+  $('#confirmText').textContent = String(msg == null ? '' : msg);
   confirmCallback = onOk;
   $('#confirmExtra').checked = false;   // 每次弹窗重置，防止上次勾选状态泄漏
   $('#confirmExtraWrap').style.display = opts.extraText ? 'flex' : 'none';
@@ -3094,7 +3128,11 @@ function inlineEditCell(td, getVal, onSave) {
     done = true;
     if (save) {
       const raw = input.value.trim();
-      onSave(raw === '' ? null : (isNaN(parseFloat(raw)) ? undefined : parseFloat(raw)));
+      if (raw === '') onSave(null);
+      else {
+        const n = Number(raw);
+        onSave(isFinite(n) && n >= 0 ? n : undefined);
+      }
     }
     renderAll();
   };
@@ -3342,6 +3380,7 @@ $('#importFile').addEventListener('change', e => {
 function openSettings() {
   const s = STATE.settings;
   $('#setItadKey').value = s.itadKey;
+  $('#setItadPublicProxy').checked = !!s.itadAllowPublicProxy;
   $('#setProxy').value = s.customProxy;
   $('#setAutoTranslate').checked = s.autoTranslate;
   $('#setPublicProxy').checked = s.usePublicProxies;
@@ -3353,6 +3392,7 @@ function openSettings() {
 $('#btnSaveSettings').addEventListener('click', () => {
   const s = STATE.settings;
   s.itadKey = $('#setItadKey').value.trim();
+  s.itadAllowPublicProxy = $('#setItadPublicProxy').checked;
   s.customProxy = $('#setProxy').value.trim();
   s.autoTranslate = $('#setAutoTranslate').checked;
   s.usePublicProxies = $('#setPublicProxy').checked;
@@ -3603,3 +3643,4 @@ window.__testAppDetails = id => steamAppDetails(id);
 </script>
 </body>
 </html>
+
