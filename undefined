@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "updatedAt": 1789309823088,
+  "updatedAt": 1789310711526,
   "games": [
     {
       "appid": 1325890,
@@ -1738,8 +1738,8 @@
       "rating": {
         "score": 9.2,
         "positive": 88,
-        "total": 574,
         "desc": "Very Positive",
+        "total": 574,
         "updatedAt": 1789309438694
       },
       "historicalLow": {
