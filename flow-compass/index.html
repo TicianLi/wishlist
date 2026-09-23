@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f6efe2">
+<meta name="color-scheme" content="light">
+<title>流水罗盘 · 零点肆</title>
+<meta name="description" content="流水罗盘 —— 微信流水监控 · 手账风记账与预算助手">
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#f6efe2;overflow:hidden}
+  body{font:16px/1.9 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:#5b4a35}
+  #app{position:fixed;inset:0;border:0;width:100%;height:100%;display:block;background:#f6efe2}
+
+  /* 启动遮罩：iframe 起来之前先给一张手账味的安抚卡，别让用户看到白屏 */
+  #boot{position:fixed;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;
+        background:#f6efe2;transition:opacity .35s ease}
+  #boot.gone{opacity:0;pointer-events:none}
+  .card{width:min(330px,86vw);box-sizing:border-box;text-align:center;
+        background:#fffdf7;border:1px solid #e6d9c0;border-left:4px solid #c1782e;
+        border-radius:14px 6px 14px 6px;box-shadow:0 8px 22px rgba(122,96,60,.10);
+        padding:22px 20px 20px}
+  .card h1{margin:0 0 4px;font-size:19px;font-weight:700;letter-spacing:.08em;color:#3f3323}
+  .card .sub{margin:0 0 14px;font-size:11.5px;letter-spacing:.1em;color:#b09b7c}
+  .card p{margin:0;font-size:13px;line-height:1.95;color:#8a7a63}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#c1782e;
+       margin-right:7px;vertical-align:1px;animation:bl 1.1s infinite ease-in-out}
+  @keyframes bl{0%,100%{opacity:.22}50%{opacity:1}}
+  .card a{color:#c1782e;font-weight:600;text-decoration:none;
+          border-bottom:1px dashed #c1782e;padding-bottom:1px}
+  .slow{display:none;margin-top:12px}
+  .card.waiting .slow{display:block}
+  .card.waiting .spin{display:none}
+</style>
+</head>
+<body>
+<iframe id="app" src="https://flow-compass.app.workbuddy.host/"
+        title="流水罗盘" allow="clipboard-read; clipboard-write"></iframe>
+
+<div id="boot">
+  <div class="card" id="bootcard">
+    <h1>流水罗盘</h1>
+    <div class="sub">零点肆 · 为主人看好每一分钱</div>
+    <p class="spin"><span class="dot"></span>正在连接云端…</p>
+    <div class="slow">
+      <p>网络有点慢，还没接上。<br>
+        <a href="https://flow-compass.app.workbuddy.host/">点这里在新窗口直接打开</a></p>
+    </div>
+  </div>
+</div>
+
+<noscript>
+  <div class="card" style="position:fixed;inset:0;margin:auto;height:fit-content">
+    <h1>流水罗盘</h1>
+    <p>需要开启 JavaScript。<br>
+      <a href="https://flow-compass.app.workbuddy.host/">点这里直接打开</a></p>
+  </div>
+</noscript>
+
+<script>
+(function () {
+  var frame = document.getElementById('app');
+  var boot  = document.getElementById('boot');
+  var card  = document.getElementById('bootcard');
+  var gone  = false;
+  function hide() {
+    if (gone) return;
+    gone = true;
+    boot.classList.add('gone');
+    setTimeout(function () { boot.style.display = 'none'; }, 400);
+  }
+  frame.addEventListener('load', hide);
+  /* 跨源 iframe 的 load 在个别 iOS 浏览器上不触发 → 兜底也必须撤遮罩，
+     否则用户会永远停在这张卡上，比慢加载更糟 */
+  setTimeout(hide, 9000);
+  /* 9 秒还没接上，就把文案换成「直接打开」的出口，而不是一直转圈骗人 */
+  setTimeout(function () { if (!gone) card.classList.add('waiting'); }, 9000);
+})();
+</script>
+</body>
+</html>
